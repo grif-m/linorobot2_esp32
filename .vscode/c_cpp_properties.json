@@ -1,0 +1,19 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "",
+        "limitSymbolsToIncludedHeaders": true
+      },
+      "includePath": [
+        "/home/user/microros_ws/install/micro_ros_agent/include/**",
+        "/home/user/microros_ws/install/micro_ros_msgs/include/**",
+        "/opt/ros/galactic/include/**",
+        "/home/user/microros_ws/src/uros/micro-ROS-Agent/micro_ros_agent/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS"
+    }
+  ],
+  "version": 4
+}
