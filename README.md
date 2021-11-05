@@ -1,5 +1,7 @@
 ## Purpose
 This fork is a port to ESP32 (2WD robot). Wish me luck! :)
+This repository should be created in microros_ws/firmware/freertos_apps/apps
+
 
 ## Installation
 All software mentioned in this guide must be installed on the robot computer.

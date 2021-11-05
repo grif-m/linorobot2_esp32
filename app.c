@@ -1,17 +1,26 @@
+//THIS is a port of https://github.com/linorobot/linorobot2_hardware to ESP32
+
+#include <stdio.h>
+
 #include <rcl/rcl.h>
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
 
-#include <std_msgs/msg/string.h>
-#include <sensor_msgs/msg/joint_state.h>
+#include <nav_msgs/msg/odometry.h>
+#include <sensor_msgs/msg/imu.h>
+#include <geometry_msgs/msg/twist.h>
+#include <geometry_msgs/msg/vector3.h>
 
-#include <stdio.h>
-#include <unistd.h>
-#include <time.h>
-
-#include "MotionControl.h"
-#include "Movements.h"
+#include "config.h"
+#include "motor.h"
+#include "kinematics.h"
+#include "pid.h"
+#include "odometry.h"
+#include "imu.h"
+#define ENCODER_USE_INTERRUPTS
+#define ENCODER_OPTIMIZE_INTERRUPTS
+#include "encoder.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,6 +29,52 @@
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 
+rcl_publisher_t odom_publisher;
+rcl_publisher_t imu_publisher;
+rcl_subscription_t twist_subscriber;
+
+nav_msgs__msg__Odometry odom_msg;
+sensor_msgs__msg__Imu imu_msg;
+geometry_msgs__msg__Twist twist_msg;
+
+rclc_executor_t executor;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_node_t node;
+rcl_timer_t control_timer;
+
+unsigned long long time_offset = 0;
+unsigned long prev_cmd_time = 0;
+unsigned long prev_odom_update = 0;
+bool micro_ros_init_successful = false;
+
+Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
+Encoder motor2_encoder(MOTOR2_ENCODER_A, MOTOR2_ENCODER_B, COUNTS_PER_REV2, MOTOR2_ENCODER_INV);
+Encoder motor3_encoder(MOTOR3_ENCODER_A, MOTOR3_ENCODER_B, COUNTS_PER_REV3, MOTOR3_ENCODER_INV);
+Encoder motor4_encoder(MOTOR4_ENCODER_A, MOTOR4_ENCODER_B, COUNTS_PER_REV4, MOTOR4_ENCODER_INV);
+
+Motor motor1_controller(PWM_FREQUENCY, PWM_BITS, MOTOR1_INV, MOTOR1_PWM, MOTOR1_IN_A, MOTOR1_IN_B);
+Motor motor2_controller(PWM_FREQUENCY, PWM_BITS, MOTOR2_INV, MOTOR2_PWM, MOTOR2_IN_A, MOTOR2_IN_B);
+Motor motor3_controller(PWM_FREQUENCY, PWM_BITS, MOTOR3_INV, MOTOR3_PWM, MOTOR3_IN_A, MOTOR3_IN_B);
+Motor motor4_controller(PWM_FREQUENCY, PWM_BITS, MOTOR4_INV, MOTOR4_PWM, MOTOR4_IN_A, MOTOR4_IN_B);
+
+PID motor1_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+PID motor2_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+PID motor3_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+PID motor4_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+
+Kinematics kinematics(
+    Kinematics::LINO_BASE, 
+    MOTOR_MAX_RPM, 
+    MAX_RPM_RATIO, 
+    MOTOR_OPERATING_VOLTAGE, 
+    MOTOR_POWER_MAX_VOLTAGE, 
+    WHEEL_DIAMETER, 
+    LR_WHEELS_DISTANCE
+);
+
+Odometry odometry;
+IMU imu;
 
 #define LOG_LOCAL_LEVEL ESP_LOG_INFO
 #include "esp_log.h"
@@ -42,26 +97,9 @@ int device_id;
 int seq_no;
 char inp_string[STRING_BUFFER_LEN];
 
-int parseInput();
-
-void sub_cmd_callback(const void * msgin)
-{
-	const std_msgs__msg__String * msg = (const std_msgs__msg__String *)msgin;
-	ESP_LOGI("Callback", "Received message: %s", msg->data.data);
-	strcpy(inp_string,msg->data.data);
-	parseInput();
-}
-
-void pub_joint_callback(rcl_timer_t * timer, int64_t last_call_time) {
-	RCLC_UNUSED(last_call_time);
-	if( timer != NULL ) {
-		for(int i=0;i<12;i++) joint_state_msg.position.data[i]=3.14*(mc.servo[i]-90)/180;
-		RCSOFTCHECK(rcl_publish(&pub_joint, &joint_state_msg, NULL));
-	}
-}
-
 void appMain(void *argument)
 {
+	/*
 	rcl_allocator_t allocator = rcl_get_default_allocator();
 	rclc_support_t support;
 
@@ -140,65 +178,18 @@ void appMain(void *argument)
 	RCCHECK(rcl_subscription_fini(&sub_cmd, &node));
 	RCCHECK(rcl_node_fini(&node));
 	RCCHECK(rcl_publisher_fini(&pub_joint, &node));
+	*/
 }
 
 
-///////////////////////////////////////////////////////////////////////////
-//PARSING                                                                //
-///////////////////////////////////////////////////////////////////////////
-void do_Move(mv_def* mv);
-
-int parseInput() { //returns number of characters processed
-	ESP_LOGI("Parse", "Parsing message: %s", inp_string);
-	switch( inp_string[0] ) {
-		case 'C':
-		switch(inp_string[1]) {
-			case 'F': do_Move(&mvForward); break;
-			case 'B': do_Move(&mvBackward); break;
-			case 'R': do_Move(&mvTurnRight); break;
-			case 'L': do_Move(&mvTurnLeft); break;
-			case 'S': do_Move(&mvStand); break;
-			case 'M':
-				switch(inp_string[2]) {
-					case '0': do_Move(&mv0); break;
-					case '1': do_Move(&mv1); break;
-					case '2': do_Move(&mv2); break;
-					case '3': do_Move(&mv3); break;
-					case '4': do_Move(&mv4); break;
-					case '5': do_Move(&mv5); break;
-				}
-				break;
-		}
-		return 2;
-		break;
-		case 'R':
-			//for(int i=0;i<6;i++) mc_setServo(i,90);
-			//for(int i=6;i<12;i++) mc_setServo(i,90);
-		return 1;
-		break;
-	}
-	return 0;
-	
+void flashLED(int n_times)
+{
+    for(int i=0; i<n_times; i++)
+    {
+        gpio_set_level(LED_PIN, 0);
+        vTaskDelay(150 / portTICK_RATE_MS);
+        gpio_set_level(LED_PIN, 1);
+        vTaskDelay(150 / portTICK_RATE_MS);
+    }
+    vTaskDelay(1000 / portTICK_RATE_MS);
 }
-
-
-///////////////////////////////////////////////////////////////////////////
-//TASKS                                                                  //
-///////////////////////////////////////////////////////////////////////////
-
-void task_Move(mv_def* mv) {
-	ESP_LOGI("Task", "Executing movement %s on core %d. Current state: %d", mv->name, xPortGetCoreID(), mc.state);
-	if( mc.state==MC_STATE_MOVING ) {
-		mc.state = MC_STATE_FINISHING;
-		ESP_LOGI("Task", "Set state to Finishing and waiting to be idle...");
-	}
-	while( mc.state!=MC_STATE_IDLE ) vTaskDelay( 500 / portTICK_PERIOD_MS );
-	mc_doMotion(mv,-1);
-	ESP_LOGI("Task", "Completed executing movement %s on core %d", mv->name, xPortGetCoreID());
-	vTaskDelete(NULL);
-}
-
-void do_Move(mv_def* mv) {
-	xTaskCreate(task_Move, "task_Move", 1024 * 2, mv, 0, NULL);
-}
-
