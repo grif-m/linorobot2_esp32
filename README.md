@@ -1,3 +1,6 @@
+## Purpose
+This fork is a port to ESP32 (2WD robot). Wish me luck! :)
+
 ## Installation
 All software mentioned in this guide must be installed on the robot computer.
 
